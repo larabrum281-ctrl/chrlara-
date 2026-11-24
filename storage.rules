@@ -1,0 +1,36 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Deny all by default
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    // User profile avatars
+    match /avatars/{userId}/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && request.auth.uid == userId
+        && request.auth.token.email_verified == true
+        && request.resource.size < 3 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Ephemeral view-once instant photos
+    // Only sender can upload; recipient and sender can delete after viewing/expiry.
+    // Reads are gated by metadata recipientId/senderId and backend single-use validation.
+    match /instants/{senderId}/{instantFile} {
+      allow create: if request.auth != null
+        && request.auth.uid == senderId
+        && request.auth.token.email_verified == true
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*')
+        && request.resource.metadata.recipientId is string;
+      allow read: if request.auth != null
+        && (request.auth.uid == senderId || request.auth.uid == resource.metadata.recipientId);
+      allow delete: if request.auth != null
+        && (request.auth.uid == senderId || request.auth.uid == resource.metadata.recipientId);
+    }
+  }
+}

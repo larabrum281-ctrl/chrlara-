@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: flash-social
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: NODE_ENV=production node server.ts
+    healthCheckPath: /api/health
+    autoDeploy: true
+    headers:
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000; includeSubDomains
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_URL
+        sync: false
+      - key: VITE_RECAPTCHA_ENTERPRISE_SITE_KEY
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false

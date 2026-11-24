@@ -1,0 +1,6 @@
+{
+  "name": "FLASH",
+  "description": "Rede social de instantes efêmeros de visualização única com Firebase, PWA e hospedagem na Render.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

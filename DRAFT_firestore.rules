@@ -1,0 +1,370 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net (Default-Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Connectivity probe document (read-only)
+    match /test/connection {
+      allow get: if isSignedIn();
+      allow list, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidFriendshipId(id) {
+      return id is string && id.size() >= 3 && id.size() <= 260 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUsername(username) {
+      return username is string && username.size() >= 3 && username.size() <= 24 && username.matches('^[a-z0-9_]+$');
+    }
+
+    function friendshipIdFor(uidA, uidB) {
+      return uidA < uidB ? uidA + '_' + uidB : uidB + '_' + uidA;
+    }
+
+    function areFriends(uidA, uidB) {
+      return exists(/databases/$(database)/documents/friendships/$(friendshipIdFor(uidA, uidB))) &&
+        get(/databases/$(database)/documents/friendships/$(friendshipIdFor(uidA, uidB))).data.status == 'accepted';
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'username', 'displayName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'username', 'displayName', 'photoURL', 'bio', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid == userId && data.uid == request.auth.uid &&
+        isValidUsername(data.username) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 1000)) &&
+        (!('bio' in data) || (data.bio is string && data.bio.size() <= 160)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'pushEnabled', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'pushEnabled', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid == userId && data.uid == request.auth.uid &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.pushEnabled is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUsernameClaim(data, usernameKey) {
+      return data.keys().hasAll(['uid', 'username', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'username', 'createdAt']) &&
+        data.uid is string && data.uid == request.auth.uid &&
+        isValidUsername(data.username) && data.username == usernameKey &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidFriendship(data, friendshipId) {
+      return data.keys().hasAll([
+          'id', 'participantIds', 'requesterId', 'recipientId',
+          'requesterName', 'requesterUsername', 'recipientName', 'recipientUsername',
+          'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'participantIds', 'requesterId', 'recipientId',
+          'requesterName', 'requesterUsername', 'requesterPhoto',
+          'recipientName', 'recipientUsername', 'recipientPhoto',
+          'status', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == friendshipId &&
+        data.participantIds is list && data.participantIds.size() == 2 &&
+        data.participantIds[0] is string && data.participantIds[1] is string &&
+        data.requesterId is string && isValidId(data.requesterId) &&
+        data.recipientId is string && isValidId(data.recipientId) &&
+        data.requesterId != data.recipientId &&
+        data.requesterId in data.participantIds &&
+        data.recipientId in data.participantIds &&
+        data.id == friendshipIdFor(data.requesterId, data.recipientId) &&
+        data.requesterName is string && data.requesterName.size() >= 1 && data.requesterName.size() <= 60 &&
+        isValidUsername(data.requesterUsername) &&
+        (!('requesterPhoto' in data) || (data.requesterPhoto is string && data.requesterPhoto.size() <= 1000)) &&
+        data.recipientName is string && data.recipientName.size() >= 1 && data.recipientName.size() <= 60 &&
+        isValidUsername(data.recipientUsername) &&
+        (!('recipientPhoto' in data) || (data.recipientPhoto is string && data.recipientPhoto.size() <= 1000)) &&
+        data.status in ['pending', 'accepted', 'declined'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidInstant(data, instantId) {
+      return data.keys().hasAll([
+          'id', 'senderId', 'senderName', 'senderUsername',
+          'recipientId', 'recipientName', 'participantIds',
+          'caption', 'storagePath', 'durationSeconds',
+          'status', 'viewedBy', 'receivedAt', 'expiresAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'senderId', 'senderName', 'senderUsername', 'senderPhoto',
+          'recipientId', 'recipientName', 'participantIds',
+          'caption', 'storagePath', 'durationSeconds',
+          'status', 'viewedBy', 'receivedAt', 'viewedAt', 'expiresAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == instantId &&
+        data.senderId is string && isValidId(data.senderId) &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 60 &&
+        isValidUsername(data.senderUsername) &&
+        (!('senderPhoto' in data) || (data.senderPhoto is string && data.senderPhoto.size() <= 1000)) &&
+        data.recipientId is string && isValidId(data.recipientId) &&
+        data.senderId != data.recipientId &&
+        data.recipientName is string && data.recipientName.size() >= 1 && data.recipientName.size() <= 60 &&
+        data.participantIds is list && data.participantIds.size() == 2 &&
+        data.participantIds[0] is string && data.participantIds[1] is string &&
+        data.senderId in data.participantIds &&
+        data.recipientId in data.participantIds &&
+        data.caption is string && data.caption.size() <= 160 &&
+        data.storagePath is string && data.storagePath.size() >= 1 && data.storagePath.size() <= 512 &&
+        data.durationSeconds is int && data.durationSeconds >= 3 && data.durationSeconds <= 15 &&
+        data.status in ['unopened', 'viewing', 'viewed', 'expired'] &&
+        data.viewedBy is string && data.viewedBy.size() <= 128 &&
+        data.receivedAt is timestamp &&
+        (!('viewedAt' in data) || data.viewedAt is timestamp) &&
+        data.expiresAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMessage(data, messageId) {
+      return data.keys().hasAll([
+          'id', 'senderId', 'recipientId', 'participantIds',
+          'text', 'instantId', 'read', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'senderId', 'recipientId', 'participantIds',
+          'text', 'instantId', 'read', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == messageId &&
+        data.senderId is string && isValidId(data.senderId) &&
+        data.recipientId is string && isValidId(data.recipientId) &&
+        data.senderId != data.recipientId &&
+        data.participantIds is list && data.participantIds.size() == 2 &&
+        data.participantIds[0] is string && data.participantIds[1] is string &&
+        data.senderId in data.participantIds &&
+        data.recipientId in data.participantIds &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 500 &&
+        data.instantId is string && data.instantId.size() <= 128 &&
+        data.read is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidNotification(data, notificationId) {
+      return data.keys().hasAll([
+          'id', 'recipientId', 'actorId', 'actorName',
+          'type', 'entityId', 'message', 'read', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'recipientId', 'actorId', 'actorName',
+          'type', 'entityId', 'message', 'read', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == notificationId &&
+        data.recipientId is string && isValidId(data.recipientId) &&
+        data.actorId is string && isValidId(data.actorId) &&
+        data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 60 &&
+        data.type in ['friend_request', 'friend_accepted', 'instant_received', 'instant_viewed', 'message'] &&
+        data.entityId is string && data.entityId.size() >= 1 && data.entityId.size() <= 260 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 200 &&
+        data.read is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // 1. Public User Profiles (No PII)
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn() && resource.data.username is string && request.query.limit <= 30;
+      allow create: if isVerifiedUser() && isOwner(userId) && isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isOwner(userId) && isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['username', 'displayName', 'photoURL', 'bio', 'updatedAt']);
+      allow delete: if false;
+
+      // Isolated PII subcollection
+      match /private/{docId} {
+        allow get: if isOwner(userId) && docId == 'info';
+        allow list: if false;
+        allow create: if isVerifiedUser() && isOwner(userId) && docId == 'info' &&
+          isValidUserPrivateInfo(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedUser() && isOwner(userId) && docId == 'info' &&
+          isValidUserPrivateInfo(incoming(), userId) &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['email', 'pushEnabled', 'updatedAt']);
+        allow delete: if false;
+      }
+    }
+
+    // 2. Unique Usernames Registry
+    match /usernames/{username} {
+      allow get: if isSignedIn() && isValidUsername(username);
+      allow list: if false;
+      allow create: if isVerifiedUser() && isValidUsername(username) &&
+        isValidUsernameClaim(incoming(), username) &&
+        incoming().createdAt == request.time &&
+        !exists(/databases/$(database)/documents/usernames/$(username));
+      allow update: if false;
+      allow delete: if isVerifiedUser() && existing().uid == request.auth.uid;
+    }
+
+    // 3. Friendships
+    match /friendships/{friendshipId} {
+      allow get: if isSignedIn() && isValidFriendshipId(friendshipId) &&
+        request.auth.uid in existing().participantIds;
+      allow list: if isSignedIn() && request.auth.uid in resource.data.participantIds;
+      allow create: if isVerifiedUser() && isValidFriendshipId(friendshipId) &&
+        isValidFriendship(incoming(), friendshipId) &&
+        incoming().requesterId == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(incoming().recipientId));
+      allow update: if isVerifiedUser() && isValidFriendshipId(friendshipId) &&
+        isValidFriendship(incoming(), friendshipId) &&
+        existing().status == 'pending' &&
+        request.auth.uid == existing().recipientId &&
+        incoming().status in ['accepted', 'declined'] &&
+        incoming().requesterId == existing().requesterId &&
+        incoming().recipientId == existing().recipientId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidFriendshipId(friendshipId) &&
+        request.auth.uid in existing().participantIds;
+    }
+
+    // 4. View-Once Instants (Terminal State Locking)
+    match /instants/{instantId} {
+      allow get: if isSignedIn() && isValidId(instantId) &&
+        request.auth.uid in existing().participantIds;
+      allow list: if isSignedIn() && request.auth.uid in resource.data.participantIds;
+      allow create: if isVerifiedUser() && isValidId(instantId) &&
+        isValidInstant(incoming(), instantId) &&
+        incoming().senderId == request.auth.uid &&
+        incoming().status == 'unopened' &&
+        incoming().viewedBy == '' &&
+        !('viewedAt' in incoming()) &&
+        incoming().receivedAt == request.time &&
+        incoming().updatedAt == request.time &&
+        incoming().expiresAt > request.time &&
+        areFriends(incoming().senderId, incoming().recipientId);
+      allow update: if isVerifiedUser() && isValidId(instantId) &&
+        isValidInstant(incoming(), instantId) &&
+        incoming().id == existing().id &&
+        incoming().senderId == existing().senderId &&
+        incoming().recipientId == existing().recipientId &&
+        incoming().participantIds == existing().participantIds &&
+        incoming().storagePath == existing().storagePath &&
+        incoming().receivedAt == existing().receivedAt &&
+        incoming().expiresAt == existing().expiresAt &&
+        incoming().updatedAt == request.time &&
+        // Terminal State Lock: once viewed or expired, document is locked forever
+        !(existing().status in ['viewed', 'expired']) &&
+        (
+          // Action A: Recipient begins or completes single view
+          (
+            request.auth.uid == existing().recipientId &&
+            existing().status in ['unopened', 'viewing'] &&
+            incoming().status in ['viewing', 'viewed'] &&
+            incoming().viewedBy == request.auth.uid &&
+            incoming().viewedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'viewedBy', 'viewedAt', 'updatedAt'])
+          ) ||
+          // Action B: Participant marks an expired unopened instant as expired
+          (
+            request.auth.uid in existing().participantIds &&
+            request.time >= existing().expiresAt &&
+            incoming().status == 'expired' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isSignedIn() && isValidId(instantId) &&
+        request.auth.uid in existing().participantIds;
+    }
+
+    // 5. Direct Messages
+    match /messages/{messageId} {
+      allow get: if isSignedIn() && isValidId(messageId) &&
+        request.auth.uid in existing().participantIds;
+      allow list: if isSignedIn() && request.auth.uid in resource.data.participantIds;
+      allow create: if isVerifiedUser() && isValidId(messageId) &&
+        isValidMessage(incoming(), messageId) &&
+        incoming().senderId == request.auth.uid &&
+        incoming().read == false &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        areFriends(incoming().senderId, incoming().recipientId);
+      allow update: if isVerifiedUser() && isValidId(messageId) &&
+        isValidMessage(incoming(), messageId) &&
+        request.auth.uid == existing().recipientId &&
+        existing().read == false &&
+        incoming().read == true &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(messageId) &&
+        request.auth.uid == existing().senderId;
+    }
+
+    // 6. Notifications
+    match /notifications/{notificationId} {
+      allow get: if isSignedIn() && isValidId(notificationId) &&
+        existing().recipientId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.recipientId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(notificationId) &&
+        isValidNotification(incoming(), notificationId) &&
+        incoming().actorId == request.auth.uid &&
+        incoming().read == false &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(incoming().recipientId));
+      allow update: if isVerifiedUser() && isValidId(notificationId) &&
+        isValidNotification(incoming(), notificationId) &&
+        request.auth.uid == existing().recipientId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(notificationId) &&
+        existing().recipientId == request.auth.uid;
+    }
+  }
+}
